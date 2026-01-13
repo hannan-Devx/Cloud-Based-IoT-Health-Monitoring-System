@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:fypapp/screens/login/login_screen.dart';
 import 'package:fypapp/screens/map/map_screen.dart';
 import 'package:fypapp/screens/wifi_config/wifi_config_screen.dart';
+import 'package:fypapp/screens/history/history_screen.dart'; // ADD THIS IMPORT
 import 'dart:convert';
 import 'dart:async';
 import 'package:http/http.dart' as http;
@@ -152,7 +153,15 @@ class _HomeScreenState extends State<HomeScreen> {
             ListTile(
               leading: const Icon(Icons.history),
               title: const Text('History of vitals'),
-              onTap: () => Navigator.pop(context),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const HistoryScreen(),
+                  ),
+                );
+              },
             ),
           ],
         ),
@@ -216,22 +225,47 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 20),
 
-            // Real-time Vitals Cards
-            VitalCard(
-              icon: Icons.favorite,
-              iconColor: Colors.red,
-              title: "Heart Rate",
-              value: heartRate,
-              isLive: isConnected,
+            // Heart Rate Card - CLICKABLE
+            GestureDetector(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const HistoryScreen(
+                      vitalType: 'heart_rate',
+                    ),
+                  ),
+                );
+              },
+              child: VitalCard(
+                icon: Icons.favorite,
+                iconColor: Colors.red,
+                title: "Heart Rate",
+                value: heartRate,
+                isLive: isConnected,
+              ),
             ),
             const SizedBox(height: 16),
 
-            VitalCard(
-              icon: Icons.bubble_chart,
-              iconColor: Colors.green,
-              title: "SpO₂ Level",
-              value: spo2,
-              isLive: isConnected,
+            // SpO2 Card - CLICKABLE
+            GestureDetector(
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const HistoryScreen(
+                      vitalType: 'spo2',
+                    ),
+                  ),
+                );
+              },
+              child: VitalCard(
+                icon: Icons.bubble_chart,
+                iconColor: Colors.green,
+                title: "SpO₂ Level",
+                value: spo2,
+                isLive: isConnected,
+              ),
             ),
             const SizedBox(height: 20),
 
@@ -272,7 +306,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 20),
 
-            // CONFIGURE ESP32 BUTTON - THIS IS THE NEW BUTTON
+            // CONFIGURE ESP32 BUTTON
             SizedBox(
               width: double.infinity,
               height: 60,
@@ -335,7 +369,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   onPressed: () {
-                    // History logic
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const HistoryScreen(),
+                      ),
+                    );
                   },
                   icon: const Icon(Icons.history, color: Colors.black),
                   label: const Text(

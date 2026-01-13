@@ -5,10 +5,12 @@ import 'package:intl/intl.dart';
 
 class HistoryScreen extends StatefulWidget {
   final String patientId;
+  final String? vitalType; // 'heart_rate', 'spo2', or null for both
 
   const HistoryScreen({
     super.key,
     this.patientId = 'health-device-001',
+    this.vitalType,
   });
 
   @override
@@ -19,14 +21,22 @@ class _HistoryScreenState extends State<HistoryScreen> {
   List<VitalsRecord> historyData = [];
   bool isLoading = true;
   String errorMessage = '';
+  late String selectedFilter; // 'all', 'heart_rate', 'spo2'
 
   // API endpoint
   final String apiUrl = 'https://a1sdvq1q3j.execute-api.me-central-1.amazonaws.com/dev/history';
 
-
   @override
   void initState() {
     super.initState();
+    // Set initial filter based on vitalType parameter
+    if (widget.vitalType == 'heart_rate') {
+      selectedFilter = 'heart_rate';
+    } else if (widget.vitalType == 'spo2') {
+      selectedFilter = 'spo2';
+    } else {
+      selectedFilter = 'all';
+    }
     _fetchHistory();
   }
 
@@ -66,12 +76,24 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }
   }
 
+  // Filter data based on selected vital type
+  List<VitalsRecord> get filteredData {
+    if (selectedFilter == 'all') {
+      return historyData;
+    } else if (selectedFilter == 'heart_rate') {
+      return historyData;
+    } else if (selectedFilter == 'spo2') {
+      return historyData;
+    }
+    return historyData;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.red.shade50,
       appBar: AppBar(
-        title: const Text('Vitals History'),
+        title: Text(_getAppBarTitle()),
         centerTitle: true,
         backgroundColor: Colors.redAccent,
         elevation: 4,
@@ -99,7 +121,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.error_outline, size: 60, color: Colors.red.shade300),
+            Icon(Icons.error_outline,
+                size: 60, color: Colors.red.shade300),
             const SizedBox(height: 20),
             Text(
               errorMessage,
@@ -118,27 +141,33 @@ class _HistoryScreenState extends State<HistoryScreen> {
           ],
         ),
       )
-          : historyData.isEmpty
+          : filteredData.isEmpty
           ? Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.inbox, size: 60, color: Colors.grey.shade400),
+            Icon(Icons.inbox,
+                size: 60, color: Colors.grey.shade400),
             const SizedBox(height: 20),
             const Text(
               'No history available',
-              style: TextStyle(fontSize: 18, color: Colors.grey),
+              style: TextStyle(
+                  fontSize: 18, color: Colors.grey),
             ),
             const SizedBox(height: 10),
             const Text(
               'Start monitoring to see your health data',
-              style: TextStyle(fontSize: 14, color: Colors.grey),
+              style: TextStyle(
+                  fontSize: 14, color: Colors.grey),
             ),
           ],
         ),
       )
           : Column(
         children: [
+          // Filter Tabs
+          if (widget.vitalType == null) _buildFilterTabs(),
+
           // Summary Card
           _buildSummaryCard(),
 
@@ -146,9 +175,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
           Expanded(
             child: ListView.builder(
               padding: const EdgeInsets.all(16),
-              itemCount: historyData.length,
+              itemCount: filteredData.length,
               itemBuilder: (context, index) {
-                return _buildHistoryCard(historyData[index]);
+                return _buildHistoryCard(filteredData[index]);
               },
             ),
           ),
@@ -157,17 +186,70 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
+  String _getAppBarTitle() {
+    if (widget.vitalType == 'heart_rate') {
+      return 'Heart Rate History';
+    } else if (widget.vitalType == 'spo2') {
+      return 'SpO₂ Level History';
+    } else {
+      return 'Vitals History';
+    }
+  }
+
+  Widget _buildFilterTabs() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Expanded(
+            child: _buildFilterButton('All', 'all', Colors.grey),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _buildFilterButton('Heart Rate', 'heart_rate', Colors.red),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _buildFilterButton('SpO₂', 'spo2', Colors.green),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFilterButton(String label, String filterValue, Color color) {
+    final isSelected = selectedFilter == filterValue;
+    return ElevatedButton(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: isSelected ? color : Colors.white,
+        foregroundColor: isSelected ? Colors.white : color,
+        side: BorderSide(color: color),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+      ),
+      onPressed: () {
+        setState(() {
+          selectedFilter = filterValue;
+        });
+      },
+      child: Text(
+        label,
+        style: const TextStyle(fontWeight: FontWeight.bold),
+      ),
+    );
+  }
+
   Widget _buildSummaryCard() {
-    if (historyData.isEmpty) return const SizedBox.shrink();
+    if (filteredData.isEmpty) return const SizedBox.shrink();
 
-    // Calculate averages
-    double avgHeartRate = historyData
+    double avgHeartRate = filteredData
         .map((e) => e.heartRate)
-        .reduce((a, b) => a + b) / historyData.length;
+        .reduce((a, b) => a + b) / filteredData.length;
 
-    double avgSpO2 = historyData
+    double avgSpO2 = filteredData
         .map((e) => e.spo2)
-        .reduce((a, b) => a + b) / historyData.length;
+        .reduce((a, b) => a + b) / filteredData.length;
 
     return Container(
       margin: const EdgeInsets.all(16),
@@ -189,9 +271,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
       ),
       child: Column(
         children: [
-          const Text(
-            '30-Day Summary',
-            style: TextStyle(
+          Text(
+            widget.vitalType == null ? '30-Day Summary' : _getFilterTitle(),
+            style: const TextStyle(
               color: Colors.white,
               fontSize: 20,
               fontWeight: FontWeight.bold,
@@ -222,7 +304,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              '${historyData.length} readings in last 30 days',
+              '${filteredData.length} readings',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 14,
@@ -232,6 +314,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
         ],
       ),
     );
+  }
+
+  String _getFilterTitle() {
+    if (widget.vitalType == 'heart_rate') {
+      return 'Heart Rate Summary';
+    } else if (widget.vitalType == 'spo2') {
+      return 'SpO₂ Summary';
+    }
+    return '30-Day Summary';
   }
 
   Widget _buildSummaryStat(String label, String value, IconData icon) {
@@ -271,10 +362,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Date/Time header
             Row(
               children: [
-                Icon(Icons.calendar_today, size: 16, color: Colors.grey.shade600),
+                Icon(Icons.calendar_today,
+                    size: 16, color: Colors.grey.shade600),
                 const SizedBox(width: 8),
                 Text(
                   _formatDate(record.timestamp),
@@ -295,11 +386,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
               ],
             ),
             const Divider(height: 20),
-
-            // Vitals data
             Row(
               children: [
-                // Heart Rate
                 Expanded(
                   child: _buildVitalInfo(
                     'Heart Rate',
@@ -315,7 +403,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   height: 60,
                   color: Colors.grey.shade300,
                 ),
-                // SpO2
                 Expanded(
                   child: _buildVitalInfo(
                     'SpO₂',
