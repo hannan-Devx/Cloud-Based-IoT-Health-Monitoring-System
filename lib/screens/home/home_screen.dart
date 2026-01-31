@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:fypapp/screens/login/login_screen.dart';
 import 'package:fypapp/screens/map/map_screen.dart';
 import 'package:fypapp/screens/wifi_config/wifi_config_screen.dart';
-import 'package:fypapp/screens/history/history_screen.dart'; // ADD THIS IMPORT
+import 'package:fypapp/screens/history/history_screen.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'package:http/http.dart' as http;
@@ -22,7 +22,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool isConnected = false;
 
   // API Gateway URL
-  final String apiUrl = "https://a1sdvq1q3j.execute-api.me-central-1.amazonaws.com/prod/vitals";
+  final String apiUrl = "https://82x4ep0iwi.execute-api.me-central-1.amazonaws.com/prod/vitals";
 
   @override
   void initState() {
@@ -53,24 +53,51 @@ class _HomeScreenState extends State<HomeScreen> {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
 
-        if (data['status'] == 'connected' && data['heart_rate'] != null) {
+        print('DEBUG: Raw response: $data');
+
+        // Handle Lambda response format
+        var vitalsData = data;
+
+        // If response has 'body' field (Lambda response), parse it
+        if (data['body'] != null) {
+          try {
+            vitalsData = json.decode(data['body']);
+            print('DEBUG: Parsed from body: $vitalsData');
+          } catch (e) {
+            vitalsData = data;
+            print('DEBUG: Could not parse body, using raw: $vitalsData');
+          }
+        }
+
+        print('DEBUG: Final vitalsData: $vitalsData');
+        print('DEBUG: heart_rate: ${vitalsData['heart_rate']}');
+        print('DEBUG: spo2: ${vitalsData['spo2']}');
+
+        // Check if we have valid heart_rate data
+        final heartRateValue = vitalsData['heart_rate'];
+        final spo2Value = vitalsData['spo2'];
+
+        if (heartRateValue != null && heartRateValue != 0) {
           setState(() {
-            heartRate = "${data['heart_rate']} bpm";
-            spo2 = "${data['spo2']} %";
+            heartRate = "$heartRateValue bpm";
+            spo2 = "$spo2Value %";
             deviceStatus = "AWS Connected - Live Data";
             isConnected = true;
           });
+          print('✅ Data Updated: HR=$heartRateValue, SpO2=$spo2Value');
         } else {
           setState(() {
             deviceStatus = "No data available";
             isConnected = false;
           });
+          print('❌ Invalid data: HR=$heartRateValue, SpO2=$spo2Value');
         }
       } else {
         setState(() {
           deviceStatus = "API Error: ${response.statusCode}";
           isConnected = false;
         });
+        print('❌ API Error: ${response.statusCode}');
       }
     } catch (e) {
       setState(() {

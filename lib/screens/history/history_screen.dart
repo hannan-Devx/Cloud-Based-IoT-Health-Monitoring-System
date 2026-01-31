@@ -5,11 +5,11 @@ import 'package:intl/intl.dart';
 
 class HistoryScreen extends StatefulWidget {
   final String patientId;
-  final String? vitalType; // 'heart_rate', 'spo2', or null for both
+  final String? vitalType;
 
   const HistoryScreen({
     super.key,
-    this.patientId = 'health-device-001',
+    this.patientId = 'esp32-health-monitor',
     this.vitalType,
   });
 
@@ -21,15 +21,14 @@ class _HistoryScreenState extends State<HistoryScreen> {
   List<VitalsRecord> historyData = [];
   bool isLoading = true;
   String errorMessage = '';
-  late String selectedFilter; // 'all', 'heart_rate', 'spo2'
+  late String selectedFilter;
 
-  // API endpoint
-  final String apiUrl = 'https://a1sdvq1q3j.execute-api.me-central-1.amazonaws.com/dev/history';
+  // UPDATE THIS WITH YOUR ACTUAL ENDPOINT
+  final String apiUrl = 'https://82x4ep0iwi.execute-api.me-central-1.amazonaws.com/prod/history';
 
   @override
   void initState() {
     super.initState();
-    // Set initial filter based on vitalType parameter
     if (widget.vitalType == 'heart_rate') {
       selectedFilter = 'heart_rate';
     } else if (widget.vitalType == 'spo2') {
@@ -47,14 +46,45 @@ class _HistoryScreenState extends State<HistoryScreen> {
     });
 
     try {
+      print('🔍 API URL: $apiUrl');
+      print('🔍 Patient ID: ${widget.patientId}');
+
+      final url = '$apiUrl?patient_id=${widget.patientId}&limit=100';
+      print('🔍 Full URL: $url');
+
       final response = await http.get(
-        Uri.parse('$apiUrl?patient_id=${widget.patientId}&limit=100'),
+        Uri.parse(url),
         headers: {'Content-Type': 'application/json'},
       ).timeout(const Duration(seconds: 15));
 
+      print('📡 Response status: ${response.statusCode}');
+      print('📦 Response body: ${response.body}');
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        final List<dynamic> history = data['history'] ?? [];
+        print('✅ Parsed initial data: $data');
+
+        // Handle Lambda response with nested body
+        var responseData = data;
+        if (data['body'] != null) {
+          try {
+            responseData = json.decode(data['body']);
+            print('✅ Parsed from body: $responseData');
+          } catch (e) {
+            responseData = data;
+            print('⚠️ Could not parse body: $e');
+          }
+        }
+
+        print('📊 Response data keys: ${responseData.keys}');
+        print('📊 History list: ${responseData['history']}');
+
+        final List<dynamic> history = responseData['history'] ?? [];
+        print('📊 History count: ${history.length}');
+
+        if (history.isEmpty) {
+          print('❌ History is empty!');
+        }
 
         setState(() {
           historyData = history
@@ -62,29 +92,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
               .toList();
           isLoading = false;
         });
+
+        print('✨ historyData updated: ${historyData.length} records');
       } else {
         setState(() {
           errorMessage = 'Failed to load history: ${response.statusCode}';
           isLoading = false;
         });
+        print('❌ API Error: ${response.statusCode}');
       }
     } catch (e) {
       setState(() {
         errorMessage = 'Error loading history: ${e.toString()}';
         isLoading = false;
       });
+      print('❌ Exception: $e');
     }
   }
 
-  // Filter data based on selected vital type
   List<VitalsRecord> get filteredData {
-    if (selectedFilter == 'all') {
-      return historyData;
-    } else if (selectedFilter == 'heart_rate') {
-      return historyData;
-    } else if (selectedFilter == 'spo2') {
-      return historyData;
-    }
     return historyData;
   }
 
@@ -165,13 +191,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
       )
           : Column(
         children: [
-          // Filter Tabs
           if (widget.vitalType == null) _buildFilterTabs(),
-
-          // Summary Card
           _buildSummaryCard(),
-
-          // History List
           Expanded(
             child: ListView.builder(
               padding: const EdgeInsets.all(16),
@@ -243,13 +264,30 @@ class _HistoryScreenState extends State<HistoryScreen> {
   Widget _buildSummaryCard() {
     if (filteredData.isEmpty) return const SizedBox.shrink();
 
-    double avgHeartRate = filteredData
-        .map((e) => e.heartRate)
-        .reduce((a, b) => a + b) / filteredData.length;
+    // Filter out zero/invalid values for better average calculation
+    final validHeartRateData = filteredData
+        .where((e) => e.heartRate > 0 && e.heartRate < 200)
+        .toList();
 
-    double avgSpO2 = filteredData
+    final validSpO2Data = filteredData
+        .where((e) => e.spo2 > 0 && e.spo2 <= 100)
+        .toList();
+
+    double avgHeartRate = validHeartRateData.isNotEmpty
+        ? validHeartRateData
+        .map((e) => e.heartRate)
+        .reduce((a, b) => a + b) / validHeartRateData.length
+        : 0;
+
+    double avgSpO2 = validSpO2Data.isNotEmpty
+        ? validSpO2Data
         .map((e) => e.spo2)
-        .reduce((a, b) => a + b) / filteredData.length;
+        .reduce((a, b) => a + b) / validSpO2Data.length
+        : 0;
+
+    print('📊 Valid HR data: ${validHeartRateData.length}/${filteredData.length}');
+    print('📊 Valid SpO2 data: ${validSpO2Data.length}/${filteredData.length}');
+    print('📊 Avg HR: $avgHeartRate, Avg SpO2: $avgSpO2');
 
     return Container(
       margin: const EdgeInsets.all(16),
@@ -272,7 +310,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
       child: Column(
         children: [
           Text(
-            widget.vitalType == null ? '30-Day Summary' : _getFilterTitle(),
+            '30-Day Summary',
             style: const TextStyle(
               color: Colors.white,
               fontSize: 20,
@@ -304,25 +342,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
-              '${filteredData.length} readings',
+              '${filteredData.length} total readings\n(${validHeartRateData.length} valid HR, ${validSpO2Data.length} valid SpO₂)',
+              textAlign: TextAlign.center,
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 14,
+                fontSize: 12,
               ),
             ),
           ),
         ],
       ),
     );
-  }
-
-  String _getFilterTitle() {
-    if (widget.vitalType == 'heart_rate') {
-      return 'Heart Rate Summary';
-    } else if (widget.vitalType == 'spo2') {
-      return 'SpO₂ Summary';
-    }
-    return '30-Day Summary';
   }
 
   Widget _buildSummaryStat(String label, String value, IconData icon) {
@@ -485,13 +515,55 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   String _formatDate(int timestamp) {
-    final date = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
-    return DateFormat('MMM dd, yyyy').format(date);
+    try {
+      // Agar timestamp chhota hai (seconds format)
+      // assume karo milliseconds nahi hai
+      int timestampMs;
+
+      if (timestamp < 10000000000) {
+        // Timestamp seconds mein hai (small number)
+        timestampMs = timestamp * 1000;
+      } else {
+        // Timestamp milliseconds mein hai (large number)
+        timestampMs = timestamp;
+      }
+
+      final date = DateTime.fromMillisecondsSinceEpoch(timestampMs);
+
+      // Agar date 1970 se pehle aaye ya future mein, today use karo
+      if (date.isBefore(DateTime(2020)) || date.isAfter(DateTime.now())) {
+        return DateFormat('MMM dd, yyyy').format(DateTime.now());
+      }
+
+      return DateFormat('MMM dd, yyyy').format(date);
+    } catch (e) {
+      print('Error formatting date: $e');
+      return DateFormat('MMM dd, yyyy').format(DateTime.now());
+    }
   }
 
   String _formatTime(int timestamp) {
-    final date = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
-    return DateFormat('hh:mm a').format(date);
+    try {
+      int timestampMs;
+
+      if (timestamp < 10000000000) {
+        timestampMs = timestamp * 1000;
+      } else {
+        timestampMs = timestamp;
+      }
+
+      final date = DateTime.fromMillisecondsSinceEpoch(timestampMs);
+
+      // Agar date 1970 se pehle aaye ya future mein, current time use karo
+      if (date.isBefore(DateTime(2020)) || date.isAfter(DateTime.now())) {
+        return DateFormat('hh:mm a').format(DateTime.now());
+      }
+
+      return DateFormat('hh:mm a').format(date);
+    } catch (e) {
+      print('Error formatting time: $e');
+      return DateFormat('hh:mm a').format(DateTime.now());
+    }
   }
 
   String _getHeartRateStatus(int hr) {
@@ -537,7 +609,7 @@ class VitalsRecord {
       heartRate: json['heart_rate'] ?? 0,
       spo2: json['spo2'] ?? 0,
       timestamp: json['timestamp'] ?? 0,
-      deviceId: json['device_id'] ?? '',
+      deviceId: json['device_id'] ?? 'esp32-health-monitor',
     );
   }
 }

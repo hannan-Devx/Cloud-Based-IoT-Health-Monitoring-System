@@ -1,0 +1,72 @@
+New AWS Infrastructure Setup:
+Step 1: Create New IoT Thing
+
+AWS IoT Core → All devices → Things → Create things
+Thing name: esp32-health-monitor
+Create single thing → Next
+Auto-generate certificates → Next
+No policy for now → Create thing
+Download all 4 certificate files
+Activate certificate
+
+Step 2: Create New IoT Policy
+
+IoT Core → Security → Policies → Create policy
+Policy name: ESP32HealthPolicy
+Policy document:
+
+json{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "iot:*",
+      "Resource": "*"
+    }
+  ]
+}
+
+Create policy
+Attach policy to certificate
+
+Step 3: Create New DynamoDB Table
+
+DynamoDB → Create table
+Table name: esp32-vitals
+Partition key: device_id (String)
+Sort key: timestamp (Number)
+Create table
+
+Step 4: Create New IoT Rule
+
+IoT Core → Message routing → Rules → Create rule
+Rule name: esp32_vitals_rule
+SQL query: SELECT * FROM 'esp32/health-vitals'
+Add action: DynamoDB
+Table: esp32-vitals
+Create new role: ESP32ToDBRole
+
+Step 5: Create New Lambda Function
+
+Lambda → Create function
+Function name: esp32-vitals-reader
+Runtime: Python 3.11
+
+Would you like me to continue with the Lambda code and remaining steps, or do you want to start implementing these first steps?
+
+Lambda code is ready for your new ESP32 setup.
+Step 6: Lambda Permissions
+
+Lambda function → Configuration → Permissions
+Execution role click
+Add permissions → Attach policies
+Attach AmazonDynamoDBFullAccess
+
+Step 7: Create New API Gateway
+
+API Gateway → Create API → HTTP API
+API name: esp32-health-api
+Add integration: Lambda function (esp32-vitals-reader)
+Route: GET /vitals
+Stage: prod
+Create
