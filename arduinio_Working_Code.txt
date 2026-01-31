@@ -1,0 +1,271 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include "MAX30105.h"
+#include "spo2_algorithm.h"
+#include "heartRate.h"
+#include <WebServer.h>
+
+MAX30105 particleSensor;
+
+// ====== AWS IoT ======
+const char* awsEndpoint = "a1m4kesmlvgeb-ats.iot.me-central-1.amazonaws.com"; 
+
+// Device certificate + private key (generated in AWS IoT Core)
+const char* certificatePemCrt = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIDWTCCAkGgAwIBAgIUSJ38XCiJZJOhStMpaYZEBCluGJ8wDQYJKoZIhvcNAQEL
+BQAwTTFLMEkGA1UECwxCQW1hem9uIFdlYiBTZXJ2aWNlcyBPPUFtYXpvbi5jb20g
+SW5jLiBMPVNlYXR0bGUgU1Q9V2FzaGluZ3RvbiBDPVVTMB4XDTI1MDkyMTEyNTc1
+N1oXDTQ5MTIzMTIzNTk1OVowHjEcMBoGA1UEAwwTQVdTIElvVCBDZXJ0a
+ZTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAKNgNiyQ8JNuEXraqJbB
+6C/dvuhUMmm7Kk2xyVIkmBc6K1jKIpf5grJKa9Iae0HoO4KfMGF7dS1sIaB9F4+c
+HXkI6iIOAglD0vgwm6Aw2DpuEvXE4jMVL/zqTpcKo0mVl8ddkSPTdBtNEbs0JZIM
+YJWaBAvKI2+0Q5jG4bVAa40ib7hwGIxxysC1YaAnLMR7DzgdjqcquwuIliTSmK2H
+GzCyRcKLjA1dPn/yVfFbWYIgHWxTsCHt92SLQiKsHVCLD0/epluISPZqXXShOFVw
+ggmSssYpXGQdBOhIiUqfXGqtAL9L79s9U+myZUKO0HoxGtZUZ7cOnVvsshwZEkGt
+PgMCAwEAAaNgMF4wHwYDVR0jBBgwFoAUyEYXGjYgfYzNz3v2X+Qz2OP6MqcwHQYD
+VR0OBBYEFC2gQkiUavPTqI/G8wKEDxAuEnnDMAwGA1UdEwEB/wQCMAAwDgYDVR0P
+AQH/BAQDAgeAMA0GCSqGSIb3DQEBCwUAA4IBAQAwMuAxVybWhuqxdw8HnleivvKH
+1fBo411AYikU1MdDIyiFotIsgOi6XbX1BGR5kY4DKhR/ATVfFWnWaXhonFEz1wbn
+SN6hwlSzFENRT4XaSLfVK9d9wrHzLT66ec8sQ1YthpbnUqlNRcGeFV1hrolTWDiD
+ibNPO+gCst3lH4ltdfkcGPuHUzIT82em2UOc7tY5xp+LjhhSs8OYHywsyKXoKX/Y
+yq36dUyvEsg2YkBjXfRgvDmpPoNqhK8JdFlRHKrPcwtafLcKyxj10tJRtADgx7/r
+/QaJ4gjjtJAxwI4fHx49iqpywDD6ZOrJAsEP3yXXtWXkFZ4rRz/HqvKX72j6
+-----END CERTIFICATE-----
+)EOF";
+
+const char* privatePemKey = R"EOF(
+-----BEGIN RSA PRIVATE KEY-----
+MIIEogIBAAKCAQEAo2A2LJDwk24RetqolsHoL92+6FQyabsqTbHJUiSYFzorWMoi
+l/mCskpr0hp7Qeg7gp8wYXt1LWwhoH0Xj5wdeQjqIg4CCUPS+DCboDDYOm4S9cTi
+MxUv/OpOlwqjSZWXx12RI9N0G00RuzQlkgxglZoEC8ojb7RDmMbhtUBrjSJvuHAY
+jHHKwLVhoCcsxHsPOB2Opyq7C4iWJNKYrYcbMLJFwouMDV0+f/JV8VtZgiAdbFOw
+Ie33ZItCIqwdUIsPT96mW4hI9mpddKE4VXCCCZKyxilcZB0E6EiJSp9caq0Av0vv
+2z1T6bJlQo7QejEa1lRntw6dW+yyHBkSQa0+AwIDAQABAoIBABInNJ3LFRAsoMCX
+3zexIA2BhB7ojBl3dIHhiU8ZRdT+36Yj/6gHT2BkKIrV6nAuT7551bRfN
+QmLwo825Edrq14sUADMXo5MvGjeT14N7du7aIdTmbAkYY4BfoNfEK8ZhTntiGuBE
+MRCDU5AL5vswYLOewgwNvTKYj9rElVY78v2V4k2OLyZasJa7z0x/nOGy1h/Y+m4R
+h/M+3e1eQgMmNm1T6Ow4CXYKF0JP6Nb5wYCxHxxF2214kBOpgDPqFgYOgoXCTbhz
+8Kt26BeKqTR9EwgdAd0YHMpEYFWZlmnmRXwyNLO4HJ+yYXYpawLVWFuanKrR9A4/
++3UsnKECgYEAzkJQSQJxFU2n//C46XqaE1DokFfcVH7N5XU/J9AGx/KRMdFdBdm9
+wn7hb9rDX68e0Je6mW+aXdoqEvej+evv1TJ0itJ17l5C4zvlvDrsg5YZa+aua+Oz
+KY+sasRgjWVaQ9+Kr39XjwgcYZjLLblrH3g4zD4PS0OKyPjPazP618kCgYEAysZx
+m+CYKUUxWw6i9mOrMggCiEhs/edkDt1rbwKGrqNMny1uB4S/0X89Rp8m8QVyY5R0
+Oq4EA/D/rKAZT1Q9KBDRm0jKDfJVVowz4w8R5VWiu9Q4g1aT1Tm+k0vqxEOe9Cfw
+hYcmNktf3P/J7EdRA7nHr2hMuQywaqRyTV39JWsCgYBLOyTNfHaCrrB4SfUoM+++
+2+P3whQ7PYUcDIfcnaPbij4rTZIAcEsmheD0S3a3j8hNjQoirPJBCTIPeQP2RHhV
+6vFXMSySpQ8AkvhYj6V02WqsUJeOAp92qVDaIIaXDEDAQOj02h21rd+sOW7iXp8T
++2W8GWa6rQgSBa6iC3OTAQKBgBWYtRjo/svGds8/69NaIi2d9McXD6SrNFjw9DRK
+jJWlBtAdQo7CcLubVadj4/3fmqNIeGiXiA3zaQe1tXxheHH/+JMVWY/Ks5QYMp6I
+SFuol0ByBeLXIb+f+tAtUb+9g/x1FITkNAmsVXVwOM1Veydubfocna9HzrJM+W+M
+Bx4pAoGAIW/ocgKSvLPl568sF3vdgWZr13b7c5WdEZdVBZp57FH7jy2cYD3Hz87n
+4XWhWsvCv185TNzbaOxjuCGT25Mszf702d6cwYgegpdMG0vjWcChCp1avZY5W/1i
+EaoImBXQM1pTJU4jPj6XNuMrfVJnyBJkk1EciCmjREHAaVGed5Y=
+-----END RSA PRIVATE KEY-----
+)EOF";
+
+const char* caPemCrt = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
+ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExB
+b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
+b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
+ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
+9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
+IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
+VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
+93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
+jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
+AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
+A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
+U5PMCCjjmCXPI6T53iHTfIUJrU6adTrCC2qJeHZERxhlbI1Bjjt/msv0tadQ1wUs
+N+gDS63pYaACbvXy8MWy7Vu33PqUXHeeE6V/Uq2V8viTO96LXFvKWlJbYK8U90vv
+o/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ6XU
+5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy
+rqXRfboQnoZsG4q5WTP468SQvvG5
+-----END CERTIFICATE-----
+)EOF";
+
+WiFiClientSecure net;
+PubSubClient client(net);
+
+// ====== WebServer (WiFi Config Portal) ======
+const char* apSSID = "ESP32_Config";
+const char* apPassword = "12345678";
+
+WebServer server(80);
+
+char ssid[32] = {0};
+char password[64] = {0};
+bool connectRequested = false;
+bool wifiConnected = false;
+
+const char* htmlForm = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<body>
+<h2>Enter Wi-Fi Credentials</h2>
+<form action="/connect" method="POST">
+  SSID:<br>
+  <input type="text" name="ssid"><br>
+  Password:<br>
+  <input type="password" name="password"><br><br>
+  <input type="submit" value="Connect">
+</form>
+</body>
+</html>
+)rawliteral";
+
+// ====== Buffers ======
+#define BUFFER_SIZE 100
+uint32_t irBuffer[BUFFER_SIZE];
+uint32_t redBuffer[BUFFER_SIZE];
+
+int32_t spo2;
+int8_t  validSPO2;
+int32_t heartRate;
+int8_t  validHeartRate;
+
+static float bpmFiltered = 70;
+
+// ====== WebServer Handlers ======
+void handleRoot() {
+  server.send(200, "text/html", htmlForm);
+}
+
+void handleConnect() {
+  if (server.hasArg("ssid") && server.hasArg("password")) {
+    server.arg("ssid").toCharArray(ssid, sizeof(ssid));
+    server.arg("password").toCharArray(password, sizeof(password));
+    server.send(200, "text/html", "<h3>Trying to connect to Wi-Fi...</h3>");
+    connectRequested = true;
+    Serial.println(F("Wi-Fi connect requested!"));
+  }
+}
+
+// ====== Connect to AWS IoT ======
+void connectAWS() {
+  Serial.println("Setting up TLS credentials...");
+  net.setCACert(caPemCrt);
+  net.setCertificate(certificatePemCrt);
+  net.setPrivateKey(privatePemKey);
+
+  client.setServer(awsEndpoint, 8883);
+
+  Serial.print("Connecting to AWS IoT...");
+  while (!client.connected()) {
+    if (client.connect("ESP32Client")) {
+      Serial.println(" connected!");
+    } else {
+      Serial.print(".");
+      delay(1000);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println(F("Starting SoftAP..."));
+  WiFi.softAP(apSSID, apPassword);
+  Serial.print(F("SoftAP IP: "));
+  Serial.println(WiFi.softAPIP());
+
+  server.on("/", handleRoot);
+  server.on("/connect", HTTP_POST, handleConnect);
+  server.begin();
+  Serial.println(F("HTTP server started. Open browser to 192.168.4.1"));
+
+  Wire.begin(21, 22);
+  if (!particleSensor.begin(Wire, I2C_SPEED_STANDARD)) {
+    Serial.println("MAX30102 not found. Check wiring!");
+    while (1);
+  }
+  particleSensor.setup(0x3F, 4, 2, 100, 411, 16384);
+  particleSensor.setPulseAmplitudeRed(0x3F);
+  particleSensor.setPulseAmplitudeIR(0x3F);
+  particleSensor.setPulseAmplitudeGreen(0);
+}
+
+void loop() {
+  server.handleClient();
+
+  if (connectRequested) {
+    Serial.print(F("Connecting to SSID: "));
+    Serial.println(ssid);
+
+    WiFi.begin(ssid, password);
+    unsigned long startTime = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startTime < 15000) {
+      delay(500);
+      Serial.print(F("."));
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println(F("\nConnected! IP:"));
+      Serial.println(WiFi.localIP());
+      wifiConnected = true;
+      connectAWS();
+    } else {
+      Serial.println(F("\nFailed to connect."));
+      wifiConnected = false;
+    }
+
+    connectRequested = false;
+  }
+
+  if (wifiConnected && client.connected()) {
+    client.loop();
+
+    if (particleSensor.check() > 0) {
+      long irValue = particleSensor.getFIFOIR();
+      long redValue = particleSensor.getFIFORed();
+
+      static int bufIndex = 0;
+      irBuffer[bufIndex] = irValue;
+      redBuffer[bufIndex] = redValue;
+      bufIndex++;
+
+      if (bufIndex >= BUFFER_SIZE) {
+        maxim_heart_rate_and_oxygen_saturation(
+          irBuffer, BUFFER_SIZE,
+          redBuffer,
+          &spo2, &validSPO2,
+          &heartRate, &validHeartRate
+        );
+
+        if (validHeartRate && heartRate > 40 && heartRate < 180) {
+          if (abs(heartRate - bpmFiltered) < 40) {
+            bpmFiltered = 0.85 * bpmFiltered + 0.15 * heartRate;
+          }
+        }
+        // ✅ ONLY PUBLISH IF BOTH VALUES VALID
+        if (validHeartRate && validSPO2 && 
+        heartRate > 40 && heartRate < 180 && 
+        spo2 >= 80 && spo2 <= 100) 
+        {
+
+        String payload = "{";
+        payload += "\"device_id\":\"esp32-health-monitor\",";
+        payload += "\"timestamp\":" + String((long)time(nullptr)) + ",";
+        payload += "\"heart_rate\":" + String((int)bpmFiltered) + ",";
+        payload += "\"spo2\":" + String(spo2);
+        payload += "}";
+
+        Serial.println("✅ Publishing valid: " + payload);
+        client.publish("esp32/health-vitals", payload.c_str());
+       } else {
+        Serial.println("❌ Invalid data: HR=" + String(heartRate) + 
+                   " SpO2=" + String(spo2) + 
+                   " - Not publishing");
+       }
+
+        bufIndex = 0;
+       }
+    }
+  }
+}
