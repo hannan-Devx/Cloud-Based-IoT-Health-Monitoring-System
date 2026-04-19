@@ -25,7 +25,7 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'FYP App',
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: const ConnectBandScreen(),
+      home: const HomeScreen(),
       routes: {
         '/login': (context) => const LoginScreen(),
         '/register': (context) => const RegisterScreen(),
