@@ -9,7 +9,7 @@ class HistoryScreen extends StatefulWidget {
 
   const HistoryScreen({
     super.key,
-    this.patientId = 'esp32-health-monitor',
+    this.patientId = 'esp32-01',
     this.vitalType,
   });
 
@@ -24,7 +24,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   late String selectedFilter;
 
   // UPDATE THIS WITH YOUR ACTUAL ENDPOINT
-  final String apiUrl = 'https://82x4ep0iwi.execute-api.me-central-1.amazonaws.com/prod/history';
+  final String apiUrl = 'https://u2yktmh1zg.execute-api.ap-south-1.amazonaws.com/prod/history';
 
   @override
   void initState() {

@@ -1,0 +1,72 @@
+import json
+import boto3
+import time
+from decimal import Decimal
+
+def lambda_handler(event, context):
+    try:
+        dynamodb = boto3.resource('dynamodb')
+        table = dynamodb.Table('esp32-vitals')
+        
+        response = table.scan()
+        items = response.get('Items', [])
+        
+        valid_items = []
+        for item in items:
+            # Data payload ke andar nested hai
+            if 'payload' in item:
+                data = item['payload']
+            else:
+                data = item
+            
+            bpm = data.get('bpm')
+            spo2 = data.get('spo2')
+            ts = item.get('timestamp')
+            
+            if ts is not None and bpm is not None and spo2 is not None:
+                try:
+                    if int(bpm) > 0 and int(spo2) > 0:
+                        valid_items.append({
+                            'bpm': int(bpm),
+                            'spo2': int(spo2),
+                            'timestamp': int(ts),
+                            'device_id': str(data.get('device_id', 'esp32-01'))
+                        })
+                except:
+                    pass
+        
+        if valid_items:
+            latest = sorted(valid_items, key=lambda x: x['timestamp'], reverse=True)[0]
+            vitals_data = {
+                'heart_rate': latest['bpm'],
+                'spo2': latest['spo2'],
+                'timestamp': latest['timestamp'],
+                'device_id': latest['device_id'],
+                'status': 'connected'
+            }
+        else:
+            vitals_data = {
+                'heart_rate': 0,
+                'spo2': 0,
+                'timestamp': int(time.time()),
+                'device_id': 'esp32-01',
+                'status': 'no_data'
+            }
+        
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+            },
+            'body': json.dumps(vitals_data)
+        }
+        
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': {'Access-Control-Allow-Origin': '*'},
+            'body': json.dumps({'error': str(e)})
+        }

@@ -3,9 +3,11 @@ import 'package:fypapp/screens/login/login_screen.dart';
 import 'package:fypapp/screens/map/map_screen.dart';
 import 'package:fypapp/screens/wifi_config/wifi_config_screen.dart';
 import 'package:fypapp/screens/history/history_screen.dart';
+import 'package:fypapp/screens/emergency/emergency_contacts_screen.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'package:http/http.dart' as http;
+
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -22,7 +24,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool isConnected = false;
 
   // API Gateway URL
-  final String apiUrl = "https://82x4ep0iwi.execute-api.me-central-1.amazonaws.com/prod/vitals";
+  final String apiUrl = "https://u2yktmh1zg.execute-api.ap-south-1.amazonaws.com/prod/vitals";
+  //final String apiUrl = "https://a1sdvq1q3j.execute-api.me-central-1.amazonaws.com/prod/vitals";
+  //final String apiUrl = "https://82x4ep0iwi.execute-api.me-central-1.amazonaws.com/prod/vitals";
 
   @override
   void initState() {
@@ -187,6 +191,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   MaterialPageRoute(
                     builder: (context) => const HistoryScreen(),
                   ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.emergency, color: Colors.red),
+              title: const Text('Emergency Contacts'),
+              subtitle: const Text('Configure alert recipients'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const EmergencyContactsScreen()),
                 );
               },
             ),
@@ -408,6 +424,21 @@ class _HomeScreenState extends State<HomeScreen> {
                     "History",
                     style: TextStyle(color: Colors.black),
                   ),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade700,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const EmergencyContactsScreen()),
+                    );
+                  },
+                  icon: const Icon(Icons.emergency, color: Colors.white),
+                  label: const Text('Alerts', style: TextStyle(color: Colors.white)),
                 ),
               ],
             ),

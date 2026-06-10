@@ -1,0 +1,81 @@
+import json
+import boto3
+import time
+from decimal import Decimal
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('esp32-vitals')
+
+def lambda_handler(event, context):
+    try:
+        query_params = event.get('queryStringParameters') or {}
+        patient_id = query_params.get('patient_id', 'esp32-01')
+        limit = int(query_params.get('limit', 100))
+        
+        print(f"Fetching history for patient: {patient_id}, limit: {limit}")
+        
+        # Scan without timestamp filter
+        response = table.scan(
+            FilterExpression='device_id = :did',
+            ExpressionAttributeValues={
+                ':did': patient_id
+            }
+        )
+        
+        items = response.get('Items', [])
+        print(f"Found {len(items)} items")
+        
+        history_data = []
+        for item in items:
+            if 'payload' in item:
+                payload = item.get('payload', {})
+                bpm = payload.get('bpm') or payload.get('heart_rate')
+                spo2 = payload.get('spo2')
+            else:
+                bpm = item.get('bpm') or item.get('heart_rate')
+                spo2 = item.get('spo2')
+            
+            ts = item.get('timestamp', 0)
+            
+            if bpm is None or spo2 is None:
+                continue
+            
+            try:
+                hr_val = int(bpm)
+                spo2_val = int(spo2)
+                ts_val = int(ts)
+                if hr_val <= 0 or spo2_val <= 0:
+                    continue
+                history_data.append({
+                    'heart_rate': hr_val,
+                    'spo2': spo2_val,
+                    'timestamp': ts_val,
+                    'device_id': str(item.get('device_id', patient_id))
+                })
+            except:
+                continue
+        
+        history_data = sorted(history_data, key=lambda x: x['timestamp'], reverse=True)[:limit]
+        print(f"Returning {len(history_data)} formatted records")
+        
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': 'Content-Type',
+                'Access-Control-Allow-Methods': 'GET,OPTIONS'
+            },
+            'body': json.dumps({
+                'patient_id': patient_id,
+                'count': len(history_data),
+                'history': history_data
+            })
+        }
+        
+    except Exception as e:
+        print(f"ERROR: {str(e)}")
+        return {
+            'statusCode': 500,
+            'headers': {'Access-Control-Allow-Origin': '*'},
+            'body': json.dumps({'error': 'Failed to fetch history', 'message': str(e)})
+        }
