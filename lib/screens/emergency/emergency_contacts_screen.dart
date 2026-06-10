@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:convert';
+import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:geolocator/geolocator.dart';
 
 // ─────────────────────────────────────────────────────────────
 // MODELS
@@ -50,15 +52,30 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
     with TickerProviderStateMixin {
   List<EmergencyContact> _contacts = [];
   bool _isSaving = false;
-  bool _isTesting = false;
+  bool _isSendingAlert = false;
   String _fcmToken = '';
+
+  // ── Live vitals (fetched from AWS) ──
+  int _heartRate = 0;
+  int _spo2 = 0;
+  double _latitude = 0.0;
+  double _longitude = 0.0;
+  bool _vitalsLoaded = false;
+
+  // ── Threshold auto-alert tracking ──
+  bool _autoAlertSent = false;
+  Timer? _vitalsTimer;
+
+  // ── Thresholds ──
+  static const int _heartRateLow  = 50;
+  static const int _heartRateHigh = 120;
+  static const int _spo2Low       = 90;
+
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
-  // ── Change this to your actual API endpoint ──
   static const String _apiBase =
       'https://tqxls80iih.execute-api.ap-south-1.amazonaws.com/prod';
-
   static const String _deviceId = 'esp32-health-monitor';
 
   @override
@@ -72,21 +89,106 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
         Tween<double>(begin: 1.0, end: 1.08).animate(_pulseController);
     _loadLocalContacts();
     _getFCMToken();
+    _getLocation();
+    _fetchLiveVitals(); // fetch immediately on open
+    // Poll vitals every 30 seconds
+    _vitalsTimer = Timer.periodic(
+      const Duration(seconds: 30),
+          (_) => _fetchLiveVitals(),
+    );
   }
 
   // ── FCM TOKEN ──────────────────────────────────────────────
 
   Future<void> _getFCMToken() async {
     FirebaseMessaging messaging = FirebaseMessaging.instance;
-
-    // Permission maango (iOS ke liye zaroor)
     await messaging.requestPermission();
-
     String? token = await messaging.getToken();
     print('FCM Token: $token');
-
-    // Is token ko contacts ke saath AWS pe save karo
     setState(() => _fcmToken = token ?? '');
+  }
+
+  // ── LIVE LOCATION (Phone GPS) ──────────────────────────────
+
+  Future<void> _getLocation() async {
+    try {
+      LocationPermission permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        // Fallback to default Karachi coords
+        setState(() {
+          _latitude  = 24.8607;
+          _longitude = 67.0011;
+        });
+        return;
+      }
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+      setState(() {
+        _latitude  = position.latitude;
+        _longitude = position.longitude;
+      });
+      print('📍 Location: $_latitude, $_longitude');
+    } catch (e) {
+      print('Location error: $e');
+      setState(() {
+        _latitude  = 24.8607;
+        _longitude = 67.0011;
+      });
+    }
+  }
+
+  // ── FETCH LIVE VITALS FROM AWS ─────────────────────────────
+
+  Future<void> _fetchLiveVitals() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_apiBase/vitals?device_id=$_deviceId'),
+        headers: {'Content-Type': 'application/json'},
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final int hr   = (data['heart_rate'] ?? 0).toInt();
+        final int sp   = (data['spo2']       ?? 0).toInt();
+
+        setState(() {
+          _heartRate   = hr;
+          _spo2        = sp;
+          _vitalsLoaded = true;
+        });
+
+        print('📊 Live vitals — HR: $_heartRate, SpO2: $_spo2');
+
+        // ── Auto-alert if threshold crossed ──
+        _checkThresholds();
+      }
+    } catch (e) {
+      print('Vitals fetch error: $e');
+    }
+  }
+
+  // ── THRESHOLD CHECK ────────────────────────────────────────
+
+  void _checkThresholds() {
+    if (_contacts.isEmpty) return;
+
+    final bool critical = _heartRate > 0 &&
+        (_heartRate < _heartRateLow ||
+            _heartRate > _heartRateHigh ||
+            _spo2 < _spo2Low);
+
+    if (critical && !_autoAlertSent) {
+      print('🚨 Threshold crossed — sending auto alert');
+      _autoAlertSent = true; // prevent duplicate alerts
+      _triggerEmergencyAlert(isManual: false);
+    }
+
+    // Reset flag when vitals return to normal
+    if (!critical) {
+      _autoAlertSent = false;
+    }
   }
 
   // ── LOCAL STORAGE ──────────────────────────────────────────
@@ -97,8 +199,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
     if (raw != null) {
       final List decoded = json.decode(raw);
       setState(() {
-        _contacts =
-            decoded.map((e) => EmergencyContact.fromJson(e)).toList();
+        _contacts = decoded.map((e) => EmergencyContact.fromJson(e)).toList();
       });
     }
   }
@@ -130,17 +231,14 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
   // ── ADD / EDIT DIALOG ──────────────────────────────────────
 
   void _showContactDialog({EmergencyContact? existing}) {
-    final nameCtrl =
-    TextEditingController(text: existing?.name ?? '');
-    final emailCtrl =
-    TextEditingController(text: existing?.email ?? '');
-    final formKey = GlobalKey<FormState>();
+    final nameCtrl  = TextEditingController(text: existing?.name ?? '');
+    final emailCtrl = TextEditingController(text: existing?.email ?? '');
+    final formKey   = GlobalKey<FormState>();
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape:
-        RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         backgroundColor: Colors.white,
         title: Row(
           children: [
@@ -187,8 +285,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child:
-            const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -199,14 +296,13 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
             onPressed: () {
               if (!formKey.currentState!.validate()) return;
 
-              final name = nameCtrl.text.trim();
+              final name  = nameCtrl.text.trim();
               final email = emailCtrl.text.trim();
 
               if (_isDuplicate(email, excludeId: existing?.id)) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                    content:
-                    Text('Duplicate email already exists!'),
+                    content: Text('Duplicate email already exists!'),
                     backgroundColor: Colors.orange,
                   ),
                 );
@@ -221,11 +317,10 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                     email: email,
                   ));
                 } else {
-                  existing.name = name;
+                  existing.name  = name;
                   existing.email = email;
                 }
               });
-
               Navigator.pop(ctx);
             },
             child: Text(
@@ -257,8 +352,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide:
-          const BorderSide(color: Colors.redAccent, width: 2),
+          borderSide: const BorderSide(color: Colors.redAccent, width: 2),
         ),
       ),
     );
@@ -271,8 +365,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Contact?'),
-        content:
-        const Text('This contact will be removed from emergency alerts.'),
+        content: const Text(
+            'This contact will be removed from emergency alerts.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
@@ -284,8 +378,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
               setState(() => _contacts.removeWhere((c) => c.id == id));
               Navigator.pop(ctx);
             },
-            child: const Text('Delete',
-                style: TextStyle(color: Colors.white)),
+            child:
+            const Text('Delete', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -308,7 +402,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
     setState(() => _isSaving = true);
 
     try {
-      await _saveLocalContacts(); // save locally first
+      await _saveLocalContacts();
 
       final response = await http.post(
         Uri.parse('$_apiBase/contacts'),
@@ -324,7 +418,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('✅ Contacts saved to AWS successfully!'),
+              content: Text('✅ Contacts saved successfully!'),
               backgroundColor: Colors.green,
             ),
           );
@@ -333,7 +427,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
         throw Exception('Server error: ${response.statusCode}');
       }
     } catch (e) {
-      await _saveLocalContacts(); // ensure local save even on AWS failure
+      await _saveLocalContacts();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -347,71 +441,91 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
     }
   }
 
-  // ── TEST ALERT ─────────────────────────────────────────────
+  // ── TRIGGER EMERGENCY ALERT (manual + auto) ────────────────
 
-  Future<void> _sendTestAlert() async {
+  Future<void> _triggerEmergencyAlert({bool isManual = true}) async {
     if (_contacts.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Add contacts before sending test alert!'),
-          backgroundColor: Colors.orange,
-        ),
-      );
+      if (isManual && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Add contacts before sending alert!'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
       return;
     }
 
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.warning_amber_rounded, color: Colors.red),
-            SizedBox(width: 8),
-            Text('Send Test Alert?'),
+    // Refresh location before sending
+    await _getLocation();
+
+    // Use live vitals; fallback to last known if not loaded
+    final int hr  = _vitalsLoaded ? _heartRate : 0;
+    final int sp  = _vitalsLoaded ? _spo2      : 0;
+    final double lat = _latitude;
+    final double lng = _longitude;
+
+    if (isManual) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.red),
+              SizedBox(width: 8),
+              Text('Send Emergency Alert?'),
+            ],
+          ),
+          content: Text(
+            'Live vitals will be sent to all contacts:\n\n'
+                '❤️  Heart Rate : $hr bpm\n'
+                '🩸  SpO2       : $sp%\n'
+                '📍  Location   : ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}\n\n'
+                'AWS SNS charges apply per message.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Send Alert',
+                  style: TextStyle(color: Colors.white)),
+            ),
           ],
         ),
-        content: const Text(
-          'This will send a TEST emergency alert to all your contacts via SMS and Email.\n\nAWS SNS charges apply per message.',
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
-          ElevatedButton(
-            style:
-            ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Send Test',
-                style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
+      );
+      if (confirm != true) return;
+    }
 
-    if (confirm != true) return;
+    if (mounted) setState(() => _isSendingAlert = true);
 
-    setState(() => _isTesting = true);
     try {
       final response = await http.post(
         Uri.parse('$_apiBase/trigger-emergency'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'device_id': _deviceId,
-          'heart_rate': 45,
-          'spo2': 88,
-          'latitude': 24.8607,
-          'longitude': 67.0011,
-          'is_test': true,
+          'heart_rate': hr,
+          'spo2': sp,
+          'latitude': lat,
+          'longitude': lng,
+          'is_test': false,
         }),
       ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('🚨 Test alert sent to all contacts!'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 4),
+            SnackBar(
+              content: Text(isManual
+                  ? '🚨 Emergency alert sent to all contacts!'
+                  : '🚨 Auto-alert sent — vitals crossed threshold!'),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 5),
             ),
           );
         }
@@ -422,13 +536,13 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to send test: $e'),
+            content: Text('Failed to send alert: $e'),
             backgroundColor: Colors.red,
           ),
         );
       }
     } finally {
-      if (mounted) setState(() => _isTesting = false);
+      if (mounted) setState(() => _isSendingAlert = false);
     }
   }
 
@@ -444,8 +558,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
         backgroundColor: Colors.redAccent,
         elevation: 4,
         shape: const RoundedRectangleBorder(
-          borderRadius:
-          BorderRadius.vertical(bottom: Radius.circular(20)),
+          borderRadius: BorderRadius.vertical(bottom: Radius.circular(20)),
         ),
         actions: [
           IconButton(
@@ -502,9 +615,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                       ),
                       SizedBox(height: 4),
                       Text(
-                        'Contacts receive SMS + Email when vitals are critical',
-                        style: TextStyle(
-                            color: Colors.white70, fontSize: 12),
+                        'Auto-alert triggers when vitals cross threshold',
+                        style: TextStyle(color: Colors.white70, fontSize: 12),
                       ),
                     ],
                   ),
@@ -512,6 +624,64 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
               ],
             ),
           ),
+
+          // ── Live Vitals Card ──
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              boxShadow: [
+                BoxShadow(
+                    color: Colors.black12,
+                    blurRadius: 6,
+                    offset: const Offset(0, 2))
+              ],
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildVitalChip(
+                  icon: Icons.favorite,
+                  label: 'Heart Rate',
+                  value: _vitalsLoaded ? '$_heartRate bpm' : '--',
+                  color: (_heartRate < _heartRateLow ||
+                      _heartRate > _heartRateHigh) &&
+                      _vitalsLoaded
+                      ? Colors.red
+                      : Colors.pink,
+                ),
+                Container(width: 1, height: 40, color: Colors.grey.shade200),
+                _buildVitalChip(
+                  icon: Icons.water_drop,
+                  label: 'SpO2',
+                  value: _vitalsLoaded ? '$_spo2%' : '--',
+                  color: _spo2 < _spo2Low && _vitalsLoaded
+                      ? Colors.red
+                      : Colors.blue,
+                ),
+                Container(width: 1, height: 40, color: Colors.grey.shade200),
+                _buildVitalChip(
+                  icon: Icons.location_on,
+                  label: 'Location',
+                  value: _latitude != 0.0
+                      ? '${_latitude.toStringAsFixed(2)},${_longitude.toStringAsFixed(2)}'
+                      : '--',
+                  color: Colors.green,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh, color: Colors.grey),
+                  onPressed: () {
+                    _fetchLiveVitals();
+                    _getLocation();
+                  },
+                  tooltip: 'Refresh',
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
 
           // ── Contacts Count ──
           Padding(
@@ -526,8 +696,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                 const Spacer(),
                 Text(
                   'Max recommended: 5',
-                  style: TextStyle(
-                      color: Colors.grey.shade500, fontSize: 12),
+                  style:
+                  TextStyle(color: Colors.grey.shade500, fontSize: 12),
                 ),
               ],
             ),
@@ -542,17 +712,16 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(Icons.group_add,
-                      size: 80,
-                      color: Colors.red.shade200),
+                      size: 80, color: Colors.red.shade200),
                   const SizedBox(height: 16),
                   const Text(
                     'No emergency contacts yet',
-                    style: TextStyle(
-                        fontSize: 16, color: Colors.grey),
+                    style:
+                    TextStyle(fontSize: 16, color: Colors.grey),
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'Tap + to add family members',
+                    'Tap Add Contact to get started',
                     style: TextStyle(color: Colors.grey),
                   ),
                 ],
@@ -621,7 +790,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                             color: Colors.white, strokeWidth: 2))
                         : const Icon(Icons.save, color: Colors.white),
                     label: Text(
-                      _isSaving ? 'Saving...' : 'Save Contacts to AWS',
+                      _isSaving ? 'Saving...' : 'Save Contacts',
                       style: const TextStyle(
                           color: Colors.white,
                           fontSize: 16,
@@ -634,22 +803,27 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                   width: double.infinity,
                   height: 52,
                   child: ElevatedButton.icon(
-                    onPressed: _isTesting ? null : _sendTestAlert,
+                    onPressed: _isSendingAlert
+                        ? null
+                        : () => _triggerEmergencyAlert(isManual: true),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.redAccent,
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(14)),
                       elevation: 4,
                     ),
-                    icon: _isTesting
+                    icon: _isSendingAlert
                         ? const SizedBox(
                         width: 20,
                         height: 20,
                         child: CircularProgressIndicator(
                             color: Colors.white, strokeWidth: 2))
-                        : const Icon(Icons.send, color: Colors.white),
+                        : const Icon(Icons.notification_important,
+                        color: Colors.white),
                     label: Text(
-                      _isTesting ? 'Sending...' : '🚨 Send Test Alert',
+                      _isSendingAlert
+                          ? 'Sending...'
+                          : '🚨 Send Emergency Alert',
                       style: const TextStyle(
                           color: Colors.white,
                           fontSize: 16,
@@ -665,12 +839,35 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
     );
   }
 
+  // ── Vital Chip Widget ──────────────────────────────────────
+
+  Widget _buildVitalChip({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color color,
+  }) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, color: color, size: 20),
+        const SizedBox(height: 4),
+        Text(value,
+            style: TextStyle(
+                fontWeight: FontWeight.bold, fontSize: 13, color: color)),
+        Text(label,
+            style: const TextStyle(fontSize: 10, color: Colors.grey)),
+      ],
+    );
+  }
+
+  // ── Contact Card ───────────────────────────────────────────
+
   Widget _buildContactCard(EmergencyContact contact) {
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       elevation: 3,
-      shape:
-      RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Row(
@@ -699,8 +896,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                   const SizedBox(height: 4),
                   Row(
                     children: [
-                      const Icon(Icons.email,
-                          size: 14, color: Colors.blue),
+                      const Icon(Icons.email, size: 14, color: Colors.blue),
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(contact.email,
@@ -717,8 +913,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
               children: [
                 IconButton(
                   icon: const Icon(Icons.edit, color: Colors.blue),
-                  onPressed: () =>
-                      _showContactDialog(existing: contact),
+                  onPressed: () => _showContactDialog(existing: contact),
                   tooltip: 'Edit',
                 ),
                 IconButton(
@@ -736,6 +931,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
 
   @override
   void dispose() {
+    _vitalsTimer?.cancel();
     _pulseController.dispose();
     super.dispose();
   }

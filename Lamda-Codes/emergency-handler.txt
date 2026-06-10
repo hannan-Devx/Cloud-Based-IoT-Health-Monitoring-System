@@ -1,0 +1,277 @@
+"""
+Lambda Function: emergency-handler
+Routes:
+  POST /contacts          → Save emergency contacts + FCM token to DynamoDB + subscribe emails to SNS
+  POST /trigger-emergency → Fetch contacts, send SNS email alert + FCM push notification
+"""
+
+import json
+import boto3
+import os
+import time
+import urllib.request
+
+# ── AWS clients ───────────────────────────────────────────────
+dynamodb   = boto3.resource('dynamodb')
+sns_client = boto3.client('sns')
+
+# ── Environment variables (Lambda Console mein set karo) ──────
+CONTACTS_TABLE = os.environ.get('CONTACTS_TABLE', 'emergency-contacts')
+SNS_TOPIC_ARN  = os.environ.get('SNS_TOPIC_ARN', '')
+FCM_SERVER_KEY = os.environ.get('FCM_SERVER_KEY', '')
+
+
+# ─────────────────────────────────────────────────────────────
+# MAIN HANDLER
+# ─────────────────────────────────────────────────────────────
+
+def lambda_handler(event, context):
+    print(f"PATH: {event.get('rawPath')}")
+    print(f"METHOD: {event.get('requestContext', {}).get('http', {}).get('method')}")
+    print(f"ENV SNS:   {os.environ.get('SNS_TOPIC_ARN', 'NOT SET')}")
+    print(f"ENV TABLE: {os.environ.get('CONTACTS_TABLE', 'NOT SET')}")
+    print(f"ENV FCM:   {'SET' if FCM_SERVER_KEY else 'NOT SET'}")
+
+    path   = event.get('rawPath', '')
+    method = event.get('requestContext', {}).get('http', {}).get('method', '')
+
+    if 'contacts' in path and method == 'POST':
+        return save_contacts(event)
+    elif 'trigger-emergency' in path and method == 'POST':
+        return trigger_emergency(event)
+    else:
+        return _response(404, {'error': f'Route not found: {method} {path}'})
+
+
+# ─────────────────────────────────────────────────────────────
+# ROUTE 1: POST /contacts
+# ─────────────────────────────────────────────────────────────
+
+def save_contacts(event):
+    try:
+        body      = json.loads(event.get('body', '{}'))
+        device_id = body.get('device_id', 'esp32-health-monitor')
+        contacts  = body.get('contacts', [])
+        fcm_token = body.get('fcm_token', '')
+
+        if not contacts:
+            return _response(400, {'error': 'No contacts provided'})
+
+        # Extract emails only (no phone numbers)
+        emails = [c['email'] for c in contacts if c.get('email')]
+        names  = [c['name']  for c in contacts if c.get('name')]
+
+        # Save to DynamoDB
+        table = dynamodb.Table(CONTACTS_TABLE)
+        table.put_item(Item={
+            'device_id':  device_id,
+            'contacts':   json.dumps(contacts),
+            'emails':     emails,
+            'names':      names,
+            'fcm_token':  fcm_token,
+            'updated_at': int(time.time()),
+        })
+
+        print(f"✅ Saved {len(contacts)} contacts for {device_id}")
+
+        # Subscribe emails to SNS topic
+        _subscribe_emails_to_sns(emails)
+
+        return _response(200, {
+            'message':   f'Saved {len(contacts)} contacts successfully',
+            'device_id': device_id,
+            'emails':    emails,
+        })
+
+    except Exception as e:
+        print(f"❌ save_contacts error: {e}")
+        return _response(500, {'error': str(e)})
+
+
+def _subscribe_emails_to_sns(emails):
+    """Subscribe email addresses to SNS topic."""
+    if not SNS_TOPIC_ARN:
+        print("⚠️  SNS_TOPIC_ARN not set — skipping email subscriptions")
+        return
+
+    for email in emails:
+        try:
+            sns_client.subscribe(
+                TopicArn=SNS_TOPIC_ARN,
+                Protocol='email',
+                Endpoint=email,
+                ReturnSubscriptionArn=True,
+            )
+            print(f"📧 Subscribed email: {email}")
+        except Exception as e:
+            print(f"❌ Email subscription failed for {email}: {e}")
+
+
+# ─────────────────────────────────────────────────────────────
+# ROUTE 2: POST /trigger-emergency
+# ─────────────────────────────────────────────────────────────
+
+def trigger_emergency(event):
+    try:
+        body = json.loads(event.get('body', '{}'))
+
+        device_id  = body.get('device_id', 'esp32-health-monitor')
+        heart_rate = body.get('heart_rate', 0)
+        spo2       = body.get('spo2', 0)
+        latitude   = body.get('latitude', 0.0)
+        longitude  = body.get('longitude', 0.0)
+        is_test    = body.get('is_test', False)
+
+        # Fetch contacts from DynamoDB
+        table  = dynamodb.Table(CONTACTS_TABLE)
+        result = table.get_item(Key={'device_id': device_id})
+        item   = result.get('Item')
+
+        if not item:
+            return _response(404, {
+                'error': f'No contacts found for device: {device_id}. Save contacts first.'
+            })
+
+        emails    = item.get('emails', [])
+        fcm_token = item.get('fcm_token', '')
+        print(f"📋 Found {len(emails)} emails, FCM token: {'yes' if fcm_token else 'no'}")
+
+        # Build message content
+        maps_link  = f"https://maps.google.com/?q={latitude},{longitude}"
+        timestamp  = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
+        test_label = '[TEST] ' if is_test else ''
+
+        subject = f"{test_label}🚨 EMERGENCY ALERT - Patient: {device_id}"
+
+        email_message = f"""
+{'='*50}
+🚨 {test_label}EMERGENCY ALERT
+{'='*50}
+
+Patient ID  : {device_id}
+Heart Rate  : {heart_rate} bpm
+SpO2 Level  : {spo2}%
+Location    : {maps_link}
+Time        : {timestamp}
+
+{'⚠️  CRITICAL: Vitals are at dangerous levels! Please check immediately.' if not is_test else '✅ This is a TEST alert only — no real emergency.'}
+
+--
+ESP32 Health Monitor System
+{'='*50}
+"""
+
+        results = {}
+
+        # ── Send SNS Email Alert ──────────────────────────────
+        if emails:
+            if not SNS_TOPIC_ARN:
+                results['email'] = 'SKIPPED — SNS_TOPIC_ARN not set'
+            else:
+                try:
+                    sns_response = sns_client.publish(
+                        TopicArn=SNS_TOPIC_ARN,
+                        Subject=subject,
+                        Message=email_message,
+                    )
+                    results['email']      = 'sent'
+                    results['message_id'] = sns_response.get('MessageId', '')
+                    print(f"✅ SNS email sent. MessageId: {results['message_id']}")
+                except Exception as e:
+                    results['email'] = f'FAILED: {str(e)}'
+                    print(f"❌ SNS publish failed: {e}")
+        else:
+            results['email'] = 'SKIPPED — no emails saved'
+
+        # ── Send FCM Push Notification ────────────────────────
+        if fcm_token:
+            fcm_result = _send_fcm_notification(
+                fcm_token  = fcm_token,
+                heart_rate = heart_rate,
+                spo2       = spo2,
+                lat        = latitude,
+                lng        = longitude,
+                is_test    = is_test,
+            )
+            results['fcm'] = fcm_result
+        else:
+            results['fcm'] = 'SKIPPED — no FCM token saved'
+
+        return _response(200, {
+            'message':   f'Alert processed for {len(emails)} email(s)',
+            'is_test':   is_test,
+            'results':   results,
+        })
+
+    except Exception as e:
+        print(f"❌ trigger_emergency error: {e}")
+        return _response(500, {'error': str(e)})
+
+
+# ─────────────────────────────────────────────────────────────
+# FCM PUSH NOTIFICATION
+# ─────────────────────────────────────────────────────────────
+
+def _send_fcm_notification(fcm_token, heart_rate, spo2, lat, lng, is_test):
+    """Send push notification to Flutter app via Firebase FCM."""
+    if not FCM_SERVER_KEY:
+        print("⚠️  FCM_SERVER_KEY not set — skipping push notification")
+        return 'SKIPPED — FCM_SERVER_KEY not set'
+
+    title = '🚨 TEST Alert' if is_test else '🚨 EMERGENCY ALERT'
+    body  = f"Heart Rate: {heart_rate} bpm  |  SpO2: {spo2}%"
+
+    payload = {
+        "to": fcm_token,
+        "priority": "high",
+        "notification": {
+            "title": title,
+            "body":  body,
+            "sound": "default",
+        },
+        "data": {
+            "heart_rate": str(heart_rate),
+            "spo2":       str(spo2),
+            "latitude":   str(lat),
+            "longitude":  str(lng),
+            "is_test":    str(is_test),
+            "type":       "emergency",
+        },
+    }
+
+    try:
+        data = json.dumps(payload).encode('utf-8')
+        req  = urllib.request.Request(
+            url     = 'https://fcm.googleapis.com/fcm/send',
+            data    = data,
+            headers = {
+                'Authorization': f'key={FCM_SERVER_KEY}',
+                'Content-Type':  'application/json',
+            },
+        )
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = response.read().decode('utf-8')
+            print(f"✅ FCM response: {result}")
+            return 'sent'
+
+    except Exception as e:
+        print(f"❌ FCM send failed: {e}")
+        return f'FAILED: {str(e)}'
+
+
+# ─────────────────────────────────────────────────────────────
+# HELPER
+# ─────────────────────────────────────────────────────────────
+
+def _response(status_code, body):
+    return {
+        'statusCode': status_code,
+        'headers': {
+            'Content-Type':                 'application/json',
+            'Access-Control-Allow-Origin':  '*',
+            'Access-Control-Allow-Headers': 'Content-Type',
+            'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+        },
+        'body': json.dumps(body),
+    }
