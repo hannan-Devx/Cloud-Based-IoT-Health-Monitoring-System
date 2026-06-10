@@ -198,11 +198,17 @@ class _HomeScreenState extends State<HomeScreen> {
               leading: const Icon(Icons.emergency, color: Colors.red),
               title: const Text('Emergency Contacts'),
               subtitle: const Text('Configure alert recipients'),
+              // Change 1 — Drawer Emergency Contacts navigate with heartRate & spo2
               onTap: () {
                 Navigator.pop(context);
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => const EmergencyContactsScreen()),
+                  MaterialPageRoute(
+                    builder: (context) => EmergencyContactsScreen(
+                      heartRate: int.tryParse(heartRate.replaceAll(' bpm', '')) ?? 0,
+                      spo2: int.tryParse(spo2.replaceAll(' %', '')) ?? 0,
+                    ),
+                  ),
                 );
               },
             ),
@@ -431,10 +437,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
+                  // Change 2 — Quick Action "Alerts" button with heartRate & spo2
                   onPressed: () {
                     Navigator.push(
                       context,
-                      MaterialPageRoute(builder: (context) => const EmergencyContactsScreen()),
+                      MaterialPageRoute(
+                        builder: (context) => EmergencyContactsScreen(
+                          heartRate: int.tryParse(heartRate.replaceAll(' bpm', '')) ?? 0,
+                          spo2: int.tryParse(spo2.replaceAll(' %', '')) ?? 0,
+                        ),
+                      ),
                     );
                   },
                   icon: const Icon(Icons.emergency, color: Colors.white),

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:convert';
-import 'dart:async';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -41,7 +40,15 @@ class EmergencyContact {
 // ─────────────────────────────────────────────────────────────
 
 class EmergencyContactsScreen extends StatefulWidget {
-  const EmergencyContactsScreen({super.key});
+  // ── Vitals passed from HomeScreen ──
+  final int heartRate;
+  final int spo2;
+
+  const EmergencyContactsScreen({
+    super.key,
+    this.heartRate = 0,
+    this.spo2 = 0,
+  });
 
   @override
   State<EmergencyContactsScreen> createState() =>
@@ -55,27 +62,15 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
   bool _isSendingAlert = false;
   String _fcmToken = '';
 
-  // ── Live vitals (fetched from AWS) ──
-  int _heartRate = 0;
-  int _spo2 = 0;
-  double _latitude = 0.0;
+  // ── Live location from phone GPS ──
+  double _latitude  = 0.0;
   double _longitude = 0.0;
-  bool _vitalsLoaded = false;
-
-  // ── Threshold auto-alert tracking ──
-  bool _autoAlertSent = false;
-  Timer? _vitalsTimer;
-
-  // ── Thresholds ──
-  static const int _heartRateLow  = 50;
-  static const int _heartRateHigh = 120;
-  static const int _spo2Low       = 90;
 
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
   static const String _apiBase =
-      'https://tqxls80iih.execute-api.ap-south-1.amazonaws.com/prod';
+      'https://u2yktmh1zg.execute-api.ap-south-1.amazonaws.com/prod';
   static const String _deviceId = 'esp32-health-monitor';
 
   @override
@@ -90,12 +85,6 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
     _loadLocalContacts();
     _getFCMToken();
     _getLocation();
-    _fetchLiveVitals(); // fetch immediately on open
-    // Poll vitals every 30 seconds
-    _vitalsTimer = Timer.periodic(
-      const Duration(seconds: 30),
-          (_) => _fetchLiveVitals(),
-    );
   }
 
   // ── FCM TOKEN ──────────────────────────────────────────────
@@ -108,18 +97,14 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
     setState(() => _fcmToken = token ?? '');
   }
 
-  // ── LIVE LOCATION (Phone GPS) ──────────────────────────────
+  // ── LIVE LOCATION (same as MapScreen) ─────────────────────
 
   Future<void> _getLocation() async {
     try {
       LocationPermission permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied ||
           permission == LocationPermission.deniedForever) {
-        // Fallback to default Karachi coords
-        setState(() {
-          _latitude  = 24.8607;
-          _longitude = 67.0011;
-        });
+        setState(() { _latitude = 24.8607; _longitude = 67.0011; });
         return;
       }
       Position position = await Geolocator.getCurrentPosition(
@@ -132,62 +117,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
       print('📍 Location: $_latitude, $_longitude');
     } catch (e) {
       print('Location error: $e');
-      setState(() {
-        _latitude  = 24.8607;
-        _longitude = 67.0011;
-      });
-    }
-  }
-
-  // ── FETCH LIVE VITALS FROM AWS ─────────────────────────────
-
-  Future<void> _fetchLiveVitals() async {
-    try {
-      final response = await http.get(
-        Uri.parse('$_apiBase/vitals?device_id=$_deviceId'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final int hr   = (data['heart_rate'] ?? 0).toInt();
-        final int sp   = (data['spo2']       ?? 0).toInt();
-
-        setState(() {
-          _heartRate   = hr;
-          _spo2        = sp;
-          _vitalsLoaded = true;
-        });
-
-        print('📊 Live vitals — HR: $_heartRate, SpO2: $_spo2');
-
-        // ── Auto-alert if threshold crossed ──
-        _checkThresholds();
-      }
-    } catch (e) {
-      print('Vitals fetch error: $e');
-    }
-  }
-
-  // ── THRESHOLD CHECK ────────────────────────────────────────
-
-  void _checkThresholds() {
-    if (_contacts.isEmpty) return;
-
-    final bool critical = _heartRate > 0 &&
-        (_heartRate < _heartRateLow ||
-            _heartRate > _heartRateHigh ||
-            _spo2 < _spo2Low);
-
-    if (critical && !_autoAlertSent) {
-      print('🚨 Threshold crossed — sending auto alert');
-      _autoAlertSent = true; // prevent duplicate alerts
-      _triggerEmergencyAlert(isManual: false);
-    }
-
-    // Reset flag when vitals return to normal
-    if (!critical) {
-      _autoAlertSent = false;
+      setState(() { _latitude = 24.8607; _longitude = 67.0011; });
     }
   }
 
@@ -295,10 +225,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
             ),
             onPressed: () {
               if (!formKey.currentState!.validate()) return;
-
               final name  = nameCtrl.text.trim();
               final email = emailCtrl.text.trim();
-
               if (_isDuplicate(email, excludeId: existing?.id)) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
@@ -308,7 +236,6 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                 );
                 return;
               }
-
               setState(() {
                 if (existing == null) {
                   _contacts.add(EmergencyContact(
@@ -378,8 +305,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
               setState(() => _contacts.removeWhere((c) => c.id == id));
               Navigator.pop(ctx);
             },
-            child:
-            const Text('Delete', style: TextStyle(color: Colors.white)),
+            child: const Text('Delete',
+                style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -418,7 +345,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('✅ Contacts saved successfully!'),
+              content: Text('✅ Contacts saved to AWS successfully!'),
               backgroundColor: Colors.green,
             ),
           );
@@ -441,91 +368,80 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
     }
   }
 
-  // ── TRIGGER EMERGENCY ALERT (manual + auto) ────────────────
+  // ── SEND EMERGENCY ALERT ───────────────────────────────────
 
-  Future<void> _triggerEmergencyAlert({bool isManual = true}) async {
+  Future<void> _sendEmergencyAlert() async {
     if (_contacts.isEmpty) {
-      if (isManual && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Add contacts before sending alert!'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Add contacts before sending alert!'),
+          backgroundColor: Colors.orange,
+        ),
+      );
       return;
     }
 
     // Refresh location before sending
     await _getLocation();
 
-    // Use live vitals; fallback to last known if not loaded
-    final int hr  = _vitalsLoaded ? _heartRate : 0;
-    final int sp  = _vitalsLoaded ? _spo2      : 0;
-    final double lat = _latitude;
-    final double lng = _longitude;
-
-    if (isManual) {
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.red),
-              SizedBox(width: 8),
-              Text('Send Emergency Alert?'),
-            ],
-          ),
-          content: Text(
-            'Live vitals will be sent to all contacts:\n\n'
-                '❤️  Heart Rate : $hr bpm\n'
-                '🩸  SpO2       : $sp%\n'
-                '📍  Location   : ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}\n\n'
-                'AWS SNS charges apply per message.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.redAccent),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Send Alert',
-                  style: TextStyle(color: Colors.white)),
-            ),
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.red),
+            SizedBox(width: 8),
+            Text('Send Emergency Alert?'),
           ],
         ),
-      );
-      if (confirm != true) return;
-    }
+        content: Text(
+          'Live vitals will be sent to all contacts:\n\n'
+              '❤️  Heart Rate : ${widget.heartRate} bpm\n'
+              '🩸  SpO2       : ${widget.spo2}%\n'
+              '📍  Location   : ${_latitude.toStringAsFixed(4)}, '
+              '${_longitude.toStringAsFixed(4)}\n\n'
+              'AWS SNS charges apply per message.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Send Alert',
+                style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
 
-    if (mounted) setState(() => _isSendingAlert = true);
+    if (confirm != true) return;
+
+    setState(() => _isSendingAlert = true);
 
     try {
       final response = await http.post(
         Uri.parse('$_apiBase/trigger-emergency'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
-          'device_id': _deviceId,
-          'heart_rate': hr,
-          'spo2': sp,
-          'latitude': lat,
-          'longitude': lng,
-          'is_test': false,
+          'device_id':  _deviceId,
+          'heart_rate': widget.heartRate,   // ← HomeScreen se aya
+          'spo2':       widget.spo2,        // ← HomeScreen se aya
+          'latitude':   _latitude,          // ← Phone GPS se aya
+          'longitude':  _longitude,         // ← Phone GPS se aya
+          'is_test':    false,
         }),
       ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(isManual
-                  ? '🚨 Emergency alert sent to all contacts!'
-                  : '🚨 Auto-alert sent — vitals crossed threshold!'),
+            const SnackBar(
+              content: Text('🚨 Emergency alert sent to all contacts!'),
               backgroundColor: Colors.red,
-              duration: const Duration(seconds: 5),
+              duration: Duration(seconds: 4),
             ),
           );
         }
@@ -558,7 +474,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
         backgroundColor: Colors.redAccent,
         elevation: 4,
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(bottom: Radius.circular(20)),
+          borderRadius:
+          BorderRadius.vertical(bottom: Radius.circular(20)),
         ),
         actions: [
           IconButton(
@@ -615,8 +532,9 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                       ),
                       SizedBox(height: 4),
                       Text(
-                        'Auto-alert triggers when vitals cross threshold',
-                        style: TextStyle(color: Colors.white70, fontSize: 12),
+                        'Live vitals & GPS location sent on alert',
+                        style:
+                        TextStyle(color: Colors.white70, fontSize: 12),
                       ),
                     ],
                   ),
@@ -625,10 +543,11 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
             ),
           ),
 
-          // ── Live Vitals Card ──
+          // ── Live Vitals Display Card ──
           Container(
             margin: const EdgeInsets.symmetric(horizontal: 16),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(14),
@@ -645,38 +564,28 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                 _buildVitalChip(
                   icon: Icons.favorite,
                   label: 'Heart Rate',
-                  value: _vitalsLoaded ? '$_heartRate bpm' : '--',
-                  color: (_heartRate < _heartRateLow ||
-                      _heartRate > _heartRateHigh) &&
-                      _vitalsLoaded
-                      ? Colors.red
-                      : Colors.pink,
+                  value: widget.heartRate > 0
+                      ? '${widget.heartRate} bpm'
+                      : '--',
+                  color: Colors.pink,
                 ),
-                Container(width: 1, height: 40, color: Colors.grey.shade200),
+                Container(
+                    width: 1, height: 40, color: Colors.grey.shade200),
                 _buildVitalChip(
                   icon: Icons.water_drop,
                   label: 'SpO2',
-                  value: _vitalsLoaded ? '$_spo2%' : '--',
-                  color: _spo2 < _spo2Low && _vitalsLoaded
-                      ? Colors.red
-                      : Colors.blue,
+                  value: widget.spo2 > 0 ? '${widget.spo2}%' : '--',
+                  color: Colors.blue,
                 ),
-                Container(width: 1, height: 40, color: Colors.grey.shade200),
+                Container(
+                    width: 1, height: 40, color: Colors.grey.shade200),
                 _buildVitalChip(
                   icon: Icons.location_on,
                   label: 'Location',
                   value: _latitude != 0.0
-                      ? '${_latitude.toStringAsFixed(2)},${_longitude.toStringAsFixed(2)}'
-                      : '--',
+                      ? '${_latitude.toStringAsFixed(2)},\n${_longitude.toStringAsFixed(2)}'
+                      : 'Getting...',
                   color: Colors.green,
-                ),
-                IconButton(
-                  icon: const Icon(Icons.refresh, color: Colors.grey),
-                  onPressed: () {
-                    _fetchLiveVitals();
-                    _getLocation();
-                  },
-                  tooltip: 'Refresh',
                 ),
               ],
             ),
@@ -696,8 +605,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                 const Spacer(),
                 Text(
                   'Max recommended: 5',
-                  style:
-                  TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                  style: TextStyle(
+                      color: Colors.grey.shade500, fontSize: 12),
                 ),
               ],
             ),
@@ -728,7 +637,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
               ),
             )
                 : ListView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
+              padding:
+              const EdgeInsets.symmetric(horizontal: 16),
               itemCount: _contacts.length,
               itemBuilder: (ctx, i) =>
                   _buildContactCard(_contacts[i]),
@@ -760,7 +670,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                           borderRadius: BorderRadius.circular(14)),
                       elevation: 4,
                     ),
-                    icon: const Icon(Icons.person_add, color: Colors.white),
+                    icon: const Icon(Icons.person_add,
+                        color: Colors.white),
                     label: const Text(
                       'Add Contact',
                       style: TextStyle(
@@ -790,7 +701,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                             color: Colors.white, strokeWidth: 2))
                         : const Icon(Icons.save, color: Colors.white),
                     label: Text(
-                      _isSaving ? 'Saving...' : 'Save Contacts',
+                      _isSaving ? 'Saving...' : 'Save Contacts to AWS',
                       style: const TextStyle(
                           color: Colors.white,
                           fontSize: 16,
@@ -803,9 +714,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                   width: double.infinity,
                   height: 52,
                   child: ElevatedButton.icon(
-                    onPressed: _isSendingAlert
-                        ? null
-                        : () => _triggerEmergencyAlert(isManual: true),
+                    onPressed:
+                    _isSendingAlert ? null : _sendEmergencyAlert,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.redAccent,
                       shape: RoundedRectangleBorder(
@@ -839,8 +749,6 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
     );
   }
 
-  // ── Vital Chip Widget ──────────────────────────────────────
-
   Widget _buildVitalChip({
     required IconData icon,
     required String label,
@@ -853,21 +761,24 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
         Icon(icon, color: color, size: 20),
         const SizedBox(height: 4),
         Text(value,
+            textAlign: TextAlign.center,
             style: TextStyle(
-                fontWeight: FontWeight.bold, fontSize: 13, color: color)),
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+                color: color)),
         Text(label,
-            style: const TextStyle(fontSize: 10, color: Colors.grey)),
+            style:
+            const TextStyle(fontSize: 10, color: Colors.grey)),
       ],
     );
   }
-
-  // ── Contact Card ───────────────────────────────────────────
 
   Widget _buildContactCard(EmergencyContact contact) {
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       elevation: 3,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16)),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Row(
@@ -896,7 +807,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
                   const SizedBox(height: 4),
                   Row(
                     children: [
-                      const Icon(Icons.email, size: 14, color: Colors.blue),
+                      const Icon(Icons.email,
+                          size: 14, color: Colors.blue),
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(contact.email,
@@ -913,7 +825,8 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
               children: [
                 IconButton(
                   icon: const Icon(Icons.edit, color: Colors.blue),
-                  onPressed: () => _showContactDialog(existing: contact),
+                  onPressed: () =>
+                      _showContactDialog(existing: contact),
                   tooltip: 'Edit',
                 ),
                 IconButton(
@@ -931,7 +844,6 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen>
 
   @override
   void dispose() {
-    _vitalsTimer?.cancel();
     _pulseController.dispose();
     super.dispose();
   }
