@@ -7,6 +7,7 @@ import 'package:fypapp/screens/emergency/emergency_contacts_screen.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'package:http/http.dart' as http;
+import 'package:geolocator/geolocator.dart';
 
 
 class HomeScreen extends StatefulWidget {
@@ -22,6 +23,14 @@ class _HomeScreenState extends State<HomeScreen> {
   String spo2 = "-- %";
   String deviceStatus = "Connecting...";
   bool isConnected = false;
+
+  // Auto-alert state
+  bool _autoAlertSent = false;
+
+  // ── Thresholds — change karna ho toh yahan karo ──
+  static const int _heartRateLow  = 50;   // below 50 HR  → alert
+  static const int _heartRateHigh = 100;  // above 100 HR → alert
+  static const int _spo2Low       = 90;   // above 90% SpO2 → alert
 
   // API Gateway URL
   final String apiUrl = "https://u2yktmh1zg.execute-api.ap-south-1.amazonaws.com/prod/vitals";
@@ -89,6 +98,11 @@ class _HomeScreenState extends State<HomeScreen> {
             isConnected = true;
           });
           print('✅ Data Updated: HR=$heartRateValue, SpO2=$spo2Value');
+          // ── AUTO ALERT CHECK ──
+          _checkThresholdAndAlert(
+            (heartRateValue as num).toInt(),
+            (spo2Value as num).toInt(),
+          );
         } else {
           setState(() {
             deviceStatus = "No data available";
@@ -109,6 +123,102 @@ class _HomeScreenState extends State<HomeScreen> {
         isConnected = false;
       });
       print('Error fetching data: $e');
+    }
+  }
+
+  Future<void> _checkThresholdAndAlert(int hr, int sp) async {
+    final bool critical = hr < _heartRateLow ||
+        hr > _heartRateHigh ||
+        sp < _spo2Low;
+
+    print('🔍 Threshold check — HR: $hr (low:$_heartRateLow, high:$_heartRateHigh), SpO2: $sp (low:$_spo2Low) — critical: $critical, alreadySent: $_autoAlertSent');
+
+    // Vitals normal ho jayen to reset karo
+    if (!critical) {
+      _autoAlertSent = false;
+      return;
+    }
+
+    if (_autoAlertSent) {
+      print('⏭️ Alert already sent, skipping duplicate');
+      return;
+    }
+
+    _autoAlertSent = true;
+    print('🚨 Threshold crossed — HR: $hr, SpO2: $sp — sending auto alert...');
+
+    // Step 1: Try to get location (failure pe bhi alert bhejna)
+    double lat = 0.0;
+    double lng = 0.0;
+    try {
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.whileInUse ||
+          permission == LocationPermission.always) {
+        Position position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        ).timeout(const Duration(seconds: 8));
+        lat = position.latitude;
+        lng = position.longitude;
+        print('📍 Location: $lat, $lng');
+      } else {
+        print('⚠️ Location permission denied — sending alert without location');
+      }
+    } catch (e) {
+      print('⚠️ Location fetch failed: $e — sending alert without location');
+    }
+
+    // Step 2: Send alert (location mile ya na mile)
+    try {
+      final alertResponse = await http.post(
+        Uri.parse('https://u2yktmh1zg.execute-api.ap-south-1.amazonaws.com/prod/trigger-emergency'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'device_id':  'esp32-health-monitor',
+          'heart_rate': hr,
+          'spo2':       sp,
+          'latitude':   lat,
+          'longitude':  lng,
+          'is_test':    false,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      print('📡 Alert API response: ${alertResponse.statusCode} — ${alertResponse.body}');
+
+      if (mounted) {
+        if (alertResponse.statusCode == 200 || alertResponse.statusCode == 201) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('🚨 Auto-alert sent! HR: $hr bpm, SpO2: $sp%'),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('⚠️ Alert failed! Server: ${alertResponse.statusCode}'),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 5),
+            ),
+          );
+          _autoAlertSent = false; // retry allow karo
+        }
+      }
+    } catch (e) {
+      print('❌ Auto-alert HTTP failed: $e');
+      _autoAlertSent = false; // reset on failure taake retry ho
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('❌ Alert send failed: $e'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
     }
   }
 
