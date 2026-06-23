@@ -1,8 +1,3 @@
-# ─────────────────────────────────────────────────────────────
-# ADD THIS to your existing terraform-esp32/main.tf
-# Or run as a separate terraform folder
-# ─────────────────────────────────────────────────────────────
-
 # ── SNS Topic ─────────────────────────────────────────────────
 resource "aws_sns_topic" "emergency_alerts" {
   name         = "emergency-alerts"
@@ -101,20 +96,20 @@ resource "aws_lambda_function" "emergency_handler" {
 # (Assumes your existing api gateway resource is: aws_apigatewayv2_api.esp32_api)
 
 resource "aws_apigatewayv2_integration" "emergency_integration" {
-  api_id = "tqxls80iih"
+  api_id = var.api_id
   integration_type       = "AWS_PROXY"
   integration_uri        = aws_lambda_function.emergency_handler.arn
   payload_format_version = "2.0"
 }
 
 resource "aws_apigatewayv2_route" "post_contacts" {
-  api_id = "tqxls80iih"
+  api_id = var.api_id
   route_key = "POST /contacts"
   target    = "integrations/${aws_apigatewayv2_integration.emergency_integration.id}"
 }
 
 resource "aws_apigatewayv2_route" "post_trigger_emergency" {
-  api_id = "tqxls80iih"
+  api_id = var.api_id
   route_key = "POST /trigger-emergency"
   target    = "integrations/${aws_apigatewayv2_integration.emergency_integration.id}"
 }
@@ -124,7 +119,7 @@ resource "aws_lambda_permission" "allow_apigw_emergency" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.emergency_handler.function_name
   principal     = "apigateway.amazonaws.com"
-  source_arn = "arn:aws:execute-api:ap-south-1:026674665070:tqxls80iih/*/*"
+  source_arn = "arn:aws:execute-api:ap-south-1:${var.aws_account_id}:${var.api_id}/*/*"
 }
 
 # ── Outputs ────────────────────────────────────────────────────
@@ -134,9 +129,9 @@ output "sns_topic_arn" {
 }
 
 output "contacts_endpoint" {
-  value = "POST https://tqxls80iih.execute-api.ap-south-1.amazonaws.com/prod/contacts"
+  value = "POST ${var.api_base_url}/contacts"
 }
 
 output "emergency_endpoint" {
-  value = "POST https://tqxls80iih.execute-api.ap-south-1.amazonaws.com/prod/trigger-emergency"
+  value = "POST ${var.api_base_url}/trigger-emergency"
 }
