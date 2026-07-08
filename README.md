@@ -246,7 +246,7 @@ flutter run
 
 ## 👥 Team
 
-- **Abdul Hannan** —  — Cloud Backend & Mobile App: DynamoDB storage, serverless APIs (Lambda + API Gateway), Flutter integration, real-time vitals display, history retrieval,        emergency alerts, and Google Maps hospital navigation.
+- **Abdul Hannan** — Cloud Backend & Mobile App: DynamoDB storage, serverless APIs (Lambda + API Gateway), Flutter integration, real-time vitals display, history retrieval,        emergency alerts, and Google Maps hospital navigation.
 - **Huzaifa Kazim** — Hardware & Cloud Integration: integrated the ESP32 with the MAX30102 sensor and connected it to AWS IoT Core for secure data transmission.
 - **Rayyan Ahmed Khan** — Hardware Build & Report: designed the wristband enclosure, embedded the MAX30102 directly into the strap for consistent skin contact, and authored the project report.
 - **Hira Marium** — FYP Advisor
